@@ -51,12 +51,14 @@ pub fn derive_payload(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #[async_trait::async_trait]
         impl example_core::Payload for #ident {
+            #[must_use]
             async fn read_from_recv_stream(recv: &mut quinn::RecvStream) -> anyhow::Result<#ident> {
                 Ok(#ident {
                     #read_from_recv_code
                 })
             }
 
+            #[must_use]
             async fn write_to_send_stream(&self, send: &mut quinn::SendStream) -> anyhow::Result<()> {
                 #write_to_send_code
 

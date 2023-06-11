@@ -12,7 +12,7 @@ use std::{error::Error, net::SocketAddr, sync::Arc};
 pub fn make_client_endpoint(
     bind_addr: SocketAddr,
     server_certs: &[&[u8]],
-) -> Result<Endpoint, Box<dyn Error>> {
+) -> anyhow::Result<Endpoint, Box<dyn Error>> {
     let client_cfg = configure_client(server_certs)?;
     let mut endpoint = Endpoint::client(bind_addr)?;
     endpoint.set_default_client_config(client_cfg);

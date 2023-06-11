@@ -2,9 +2,11 @@ mod common;
 mod protocol;
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use anyhow::anyhow;
 use num_traits::FromPrimitive;
+use quinn::Connection;
 use std::sync::OnceLock;
 
 use crate::protocol::LoginInput;
@@ -12,7 +14,8 @@ use crate::protocol::{Command, LoginOutput, PingInput, PingOutput};
 use common::{make_client_endpoint, make_server_endpoint};
 use example_core::Payload;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
+use tokio::signal;
+use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 enum ServerResponse {
@@ -24,18 +27,23 @@ enum ServerResponse {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_addr = "127.0.0.1:5000".parse().unwrap();
     let (endpoint, server_cert) = make_server_endpoint(server_addr)?;
-    // accept a single connection
-    let endpoint2 = endpoint.clone();
-    tokio::spawn(async move {
-        let incoming_conn = endpoint2.accept().await.unwrap();
-        let conn = incoming_conn.await.unwrap();
-        println!(
-            "[server] connection accepted: addr={}",
-            conn.remote_address()
-        );
+    tokio::spawn({
+        let endpoint = endpoint.clone();
 
-        let _ = receive_ping(conn).await;
-        // Dropping all handles associated with a connection implicitly closes it
+        async move {
+            loop {
+                let incoming_conn = endpoint.accept().await.unwrap();
+                let conn = incoming_conn.await.unwrap();
+                println!(
+                    "[server] connection accepted: addr={}",
+                    conn.remote_address()
+                );
+
+                tokio::spawn(async move {
+                    let _ = receive_ping(conn).await;
+                });
+            }
+        }
     });
 
     let endpoint = make_client_endpoint("0.0.0.0:0".parse().unwrap(), &[&server_cert])?;
@@ -47,45 +55,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
     println!("[client] connected: addr={}", connection.remote_address());
 
+    let (stop_signal_sender, mut stop_signal_recv) = mpsc::channel(1);
+    tokio::spawn({
+        let endpoint = endpoint.clone();
+        let connection = connection.clone();
+
+        async move {
+            match signal::ctrl_c().await {
+                Ok(()) => {
+                    println!("CTRL_C CLICKED!!!");
+                    connection.close(0u32.into(), b"closed prematurely");
+
+                    let _ = stop_signal_sender.send(()).await;
+
+                    endpoint.wait_idle().await;
+                }
+                Err(err) => {
+                    eprintln!("Unable to listen for shutdown signal: {}", err);
+                    // we also shut down in case of error
+                }
+            }
+        }
+    });
+
+    let mut j = 0;
+    while j < 2 {
+        tokio::spawn({
+            let server_cert = server_cert.clone();
+            async move {
+                let _ = connect_and_ping(j, server_addr, &server_cert).await;
+            }
+        });
+        j += 1;
+    }
+
+    let _ = stop_signal_recv.recv().await;
+
+    endpoint.wait_idle().await;
+
+    Ok(())
+}
+
+async fn connect_and_ping(
+    j: u8,
+    server_addr: SocketAddr,
+    server_cert: &Vec<u8>,
+) -> anyhow::Result<()> {
+    let endpoint = make_client_endpoint("0.0.0.0:0".parse().unwrap(), &[server_cert])
+        .map_err(|_| anyhow!("error while creating client endpoint"))?;
+    // connect to server
+    let connection = endpoint
+        .connect(server_addr, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
+    println!("[client] connected: addr={}", connection.remote_address());
+
     let mut i: u32 = 0;
-    let mut uuid: Option<Uuid> = None;
-    // Waiting for a stream will complete with an error when the server closes the connection
+    let uuid: Uuid = login(&connection).await?;
+
     loop {
         let (mut send, mut recv) = connection
             .open_bi()
             .await
             .map_err(|e| anyhow!("failed to open stream: {}", e))?;
-        if i == 0 {
-            send.write_u8(Command::Login as u8).await?;
 
-            let username: String = "test".to_string();
-            let password: String = "test".to_string();
-
-            let login_payload = LoginInput::new(username, password);
-            login_payload.write_to_send_stream(&mut send).await?;
-            send.finish()
-                .await
-                .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
-
-            let resp: u8 = recv.read_u8().await?;
-            if resp == ServerResponse::Success as u8 {
-                let resp: LoginOutput = LoginOutput::read_from_recv_stream(&mut recv).await?;
-
-                println!("uuid = {}", resp.client_id());
-                uuid = Some(resp.client_id());
-            } else {
-                let message_bytes = recv.read_to_end(usize::MAX).await?;
-                let message: String = String::from_utf8(message_bytes)?;
-                panic!("{}", format!("Login failed! {}", message));
-            }
-        } else if i == 100 {
+        if i == 1000 {
             println!("closing");
             connection.close(0u32.into(), b"done");
             break;
         } else {
             send.write_u8(Command::Ping as u8).await?;
 
-            let payload = PingInput::new(uuid.unwrap(), i);
+            let payload = PingInput::new(uuid, i);
 
             payload.write_to_send_stream(&mut send).await?;
             send.finish()
@@ -93,17 +135,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
 
             let output: PingOutput = PingOutput::read_from_recv_stream(&mut recv).await?;
-            println!(" -> Pong");
+            println!(" -> Pong ({j},{i})");
             assert_eq!(output.iteration(), i);
+
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
 
         i += 1;
     }
 
-    // Make sure the server has a chance to clean up
-    endpoint.wait_idle().await;
-
     Ok(())
+}
+
+async fn login(connection: &Connection) -> anyhow::Result<Uuid> {
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .map_err(|e| anyhow!("failed to open stream: {}", e))?;
+
+    send.write_u8(Command::Login as u8).await?;
+
+    let username: String = "test".to_string();
+    let password: String = "test".to_string();
+
+    let login_payload = LoginInput::new(username, password);
+    login_payload.write_to_send_stream(&mut send).await?;
+    send.finish()
+        .await
+        .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
+
+    let resp: u8 = recv.read_u8().await?;
+    if resp == ServerResponse::Success as u8 {
+        let resp: LoginOutput = LoginOutput::read_from_recv_stream(&mut recv).await?;
+
+        println!("uuid = {}", resp.client_id());
+        Ok(resp.client_id())
+    } else {
+        let message_bytes = recv.read_to_end(usize::MAX).await?;
+        let message: String = String::from_utf8(message_bytes)?;
+        panic!("{}", format!("Login failed! {}", message));
+    }
 }
 
 #[allow(dead_code)]
@@ -119,10 +190,8 @@ impl User {
 
 static MAP: OnceLock<Mutex<HashMap<Uuid, User>>> = OnceLock::new();
 
-async fn receive_ping(connection: quinn::Connection) -> anyhow::Result<()> {
+async fn receive_ping(connection: Connection) -> anyhow::Result<()> {
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-        // Because it is a bidirectional stream, we can both send and receive.
-        // println!("request: {:?}", String::from_utf8(recv.read_to_end(50).await?)?);
         let command = recv.read_u8().await?;
         match Command::from_u8(command).unwrap_or(Command::Unknown) {
             Command::Login => {
@@ -139,7 +208,7 @@ async fn receive_ping(connection: quinn::Connection) -> anyhow::Result<()> {
                         .insert(uuid, User::new(uuid));
 
                     send.write_u8(ServerResponse::Success as u8).await?;
-                    let output = LoginOutput::new(uuid);
+                    let output: LoginOutput = LoginOutput::new(uuid);
                     output.write_to_send_stream(&mut send).await?;
                 } else {
                     send.write_u8(ServerResponse::Error as u8).await?;

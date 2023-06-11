@@ -3,6 +3,12 @@ name = "quinn-test"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = [
+    "example_core",
+    "lib"
+]
+
 [dependencies]
 anyhow = "1.0.71"
 async-trait = "0.1.68"
@@ -25,3 +31,9 @@ features = ["dangerous_configuration", "quic"]
 [dependencies.quinn]
 version = "0.10.1"
 features = ["rustls", "log"]
+
+[dependencies.lib]
+path = "lib"
+
+[dependencies.example_core]
+path = "example_core"

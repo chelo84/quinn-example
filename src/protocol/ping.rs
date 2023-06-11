@@ -14,4 +14,21 @@ impl PingInput {
     pub fn iteration(&self) -> u32 {
         self.iteration
     }
+    pub fn client_id(&self) -> Uuid {
+        self.client_id
+    }
+}
+
+#[derive(Payload)]
+pub struct PingOutput {
+    iteration: u32,
+}
+
+impl PingOutput {
+    pub fn new(iteration: u32) -> Self {
+        Self { iteration }
+    }
+    pub fn iteration(&self) -> u32 {
+        self.iteration
+    }
 }

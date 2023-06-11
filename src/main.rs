@@ -17,7 +17,7 @@ use tokio::sync::{Mutex};
 use uuid::{Uuid};
 use common::{make_client_endpoint, make_server_endpoint};
 use example_core::Payload;
-use crate::protocol::{Command, LoginOutput, PingInput};
+use crate::protocol::{Command, LoginOutput, PingInput, PingOutput};
 use crate::protocol::LoginInput;
 
 enum ServerResponse {
@@ -95,8 +95,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
 
-            println!("request: {:?}", String::from_utf8(recv.read_to_end(50).await?)?);
-            println!("pong received");
+            let output: PingOutput = PingOutput::read_from_recv_stream(&mut recv).await?;
+            println!(" -> Pong");
+            assert_eq!(output.iteration(), i);
         }
 
         i += 1;
@@ -147,11 +148,19 @@ async fn receive_ping(connection: quinn::Connection) -> anyhow::Result<()> {
                 send.finish().await?;
             },
             Command::Ping => {
-                println!("Ping");
+                print!("Ping");
 
-                let payload = PingInput::read_from_recv_stream(&mut recv).await?;
+                let input: PingInput = PingInput::read_from_recv_stream(&mut recv).await?;
 
-                send.write_all(format!("PONG {}", payload.iteration()).as_bytes()).await?;
+                {
+                    let guard = MAP.get().unwrap().lock().await;
+                    let user: Option<&User> = guard.get(&input.client_id());
+                    assert!(user.is_some());
+                }
+
+                let output: PingOutput = PingOutput::new(input.iteration());
+
+                output.write_to_send_stream(&mut send).await?;
                 send.finish().await?;
             },
             Command::Unknown => {

@@ -1,0 +1,27 @@
+[package]
+name = "quinn-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.71"
+async-trait = "0.1.68"
+num-derive = "0.3.3"
+num-traits = "0.2.15"
+rcgen = "0.10.0"
+
+[dependencies.uuid]
+version = "1.3.3"
+features = ["v4", "fast-rng", "macro-diagnostics"]
+
+[dependencies.tokio]
+version = "1.28.2"
+features = ["full"]
+
+[dependencies.rustls]
+version = "0.21.1"
+features = ["dangerous_configuration", "quic"]
+
+[dependencies.quinn]
+version = "0.10.1"
+features = ["rustls", "log"]

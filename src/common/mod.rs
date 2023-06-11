@@ -1,7 +1,8 @@
 //! Commonly used code in most examples.
 
-use quinn::{ClientConfig, Endpoint, ServerConfig};
+use quinn::{ClientConfig, Endpoint, ServerConfig, TransportConfig};
 use std::{error::Error, net::SocketAddr, sync::Arc};
+use std::time::Duration;
 
 /// Constructs a QUIC endpoint configured for use a client only.
 ///
@@ -44,7 +45,12 @@ fn configure_client(server_certs: &[&[u8]]) -> Result<ClientConfig, Box<dyn Erro
         certs.add(&rustls::Certificate(cert.to_vec()))?;
     }
 
-    let client_config = ClientConfig::with_root_certificates(certs);
+    let mut client_config = ClientConfig::with_root_certificates(certs);
+
+    // let mut transport_config = TransportConfig::default();
+    // transport_config.max_idle_timeout(Some(Duration::from_secs(30_000).try_into()?));
+    // client_config.transport_config(Arc::new(transport_config));
+
     Ok(client_config)
 }
 
@@ -59,6 +65,7 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let mut server_config = ServerConfig::with_single_cert(cert_chain, priv_key)?;
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(0_u8.into());
+    // transport_config.keep_alive_interval(Some(Duration::from_secs(1).try_into()?));
 
     Ok((server_config, cert_der))
 }

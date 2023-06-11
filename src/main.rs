@@ -2,6 +2,7 @@ mod common;
 mod protocol;
 
 use std::collections::HashMap;
+use std::future;
 use std::net::SocketAddr;
 
 use anyhow::anyhow;
@@ -14,9 +15,11 @@ use crate::protocol::{Command, LoginOutput, PingInput, PingOutput};
 use common::{make_client_endpoint, make_server_endpoint};
 use example_core::Payload;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::signal;
+use tokio::{join, signal};
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::futures;
 use uuid::Uuid;
+use uuid::Variant::Future;
 
 enum ServerResponse {
     Success = 0x00,
@@ -40,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 tokio::spawn(async move {
-                    let _ = receive_ping(conn).await;
+                    let _ = receive_command(conn).await;
                 });
             }
         }
@@ -59,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn({
         let endpoint = endpoint.clone();
         let connection = connection.clone();
+        let stop_signal_sender = stop_signal_sender.clone();
 
         async move {
             match signal::ctrl_c().await {
@@ -78,26 +82,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let mut j = 0;
-    while j < 2 {
-        tokio::spawn({
+    let mut i: u16 = 0;
+    let mut futures = vec![];
+    while i < 100 {
+        futures.push(tokio::spawn({
             let server_cert = server_cert.clone();
             async move {
-                let _ = connect_and_ping(j, server_addr, &server_cert).await;
+                let _ = connect_and_ping(i, server_addr, &server_cert).await;
             }
-        });
-        j += 1;
+        }));
+        i += 1;
     }
+
+    tokio::spawn(async move {
+        for handle in futures {
+            let _ = handle.await;
+        }
+
+        let _ = stop_signal_sender.send(()).await;
+    });
 
     let _ = stop_signal_recv.recv().await;
 
+    println!("Shutting down.");
     endpoint.wait_idle().await;
 
     Ok(())
 }
 
 async fn connect_and_ping(
-    j: u8,
+    i: u16,
     server_addr: SocketAddr,
     server_cert: &Vec<u8>,
 ) -> anyhow::Result<()> {
@@ -111,7 +125,7 @@ async fn connect_and_ping(
         .unwrap();
     println!("[client] connected: addr={}", connection.remote_address());
 
-    let mut i: u32 = 0;
+    let mut j: u32 = 0;
     let uuid: Uuid = login(&connection).await?;
 
     loop {
@@ -120,14 +134,14 @@ async fn connect_and_ping(
             .await
             .map_err(|e| anyhow!("failed to open stream: {}", e))?;
 
-        if i == 1000 {
+        if j == 100 {
             println!("closing");
             connection.close(0u32.into(), b"done");
             break;
         } else {
             send.write_u8(Command::Ping as u8).await?;
 
-            let payload = PingInput::new(uuid, i);
+            let payload = PingInput::new(uuid, j);
 
             payload.write_to_send_stream(&mut send).await?;
             send.finish()
@@ -135,13 +149,13 @@ async fn connect_and_ping(
                 .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
 
             let output: PingOutput = PingOutput::read_from_recv_stream(&mut recv).await?;
-            println!(" -> Pong ({j},{i})");
-            assert_eq!(output.iteration(), i);
 
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            println!(" -> Pong ({i},{j})");
+            assert_eq!(output.iteration(), j);
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         }
 
-        i += 1;
+        j += 1;
     }
 
     Ok(())
@@ -165,6 +179,7 @@ async fn login(connection: &Connection) -> anyhow::Result<Uuid> {
         .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
 
     let resp: u8 = recv.read_u8().await?;
+
     if resp == ServerResponse::Success as u8 {
         let resp: LoginOutput = LoginOutput::read_from_recv_stream(&mut recv).await?;
 
@@ -190,7 +205,7 @@ impl User {
 
 static MAP: OnceLock<Mutex<HashMap<Uuid, User>>> = OnceLock::new();
 
-async fn receive_ping(connection: Connection) -> anyhow::Result<()> {
+async fn receive_command(connection: Connection) -> anyhow::Result<()> {
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
         let command = recv.read_u8().await?;
         match Command::from_u8(command).unwrap_or(Command::Unknown) {
@@ -215,7 +230,9 @@ async fn receive_ping(connection: Connection) -> anyhow::Result<()> {
                     send.write_all("Invalid username or password.".as_bytes())
                         .await?;
                 }
-                send.finish().await?;
+
+                send.finish().await
+                    .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
             }
             Command::Ping => {
                 print!("Ping");
@@ -229,9 +246,9 @@ async fn receive_ping(connection: Connection) -> anyhow::Result<()> {
                 }
 
                 let output: PingOutput = PingOutput::new(input.iteration());
-
                 output.write_to_send_stream(&mut send).await?;
-                send.finish().await?;
+                send.finish().await
+                    .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
             }
             Command::Unknown => {
                 println!("Nothing");

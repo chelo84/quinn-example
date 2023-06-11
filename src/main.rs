@@ -1,28 +1,23 @@
-//! This example intends to use the smallest amount of code to make a simple QUIC connection.
-//!
-//! Checkout the `README.md` for guidance.
-
 mod common;
 mod protocol;
 
-
 use std::collections::HashMap;
 
-use std::sync::{OnceLock};
 use anyhow::anyhow;
 use num_traits::FromPrimitive;
+use std::sync::OnceLock;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{Mutex};
-use uuid::{Uuid};
+use crate::protocol::LoginInput;
+use crate::protocol::{Command, LoginOutput, PingInput, PingOutput};
 use common::{make_client_endpoint, make_server_endpoint};
 use example_core::Payload;
-use crate::protocol::{Command, LoginOutput, PingInput, PingOutput};
-use crate::protocol::LoginInput;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
 enum ServerResponse {
     Success = 0x00,
-    Error = 0x01
+    Error = 0x01,
 }
 
 #[tokio::main]
@@ -56,7 +51,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut uuid: Option<Uuid> = None;
     // Waiting for a stream will complete with an error when the server closes the connection
     loop {
-        let (mut send, mut recv) = connection.open_bi().await.map_err(|e| anyhow!("failed to open stream: {}", e))?;
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .map_err(|e| anyhow!("failed to open stream: {}", e))?;
         if i == 0 {
             send.write_u8(Command::Login as u8).await?;
 
@@ -80,7 +78,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let message: String = String::from_utf8(message_bytes)?;
                 panic!("{}", format!("Login failed! {}", message));
             }
-
         } else if i == 100 {
             println!("closing");
             connection.close(0u32.into(), b"done");
@@ -136,17 +133,21 @@ async fn receive_ping(connection: quinn::Connection) -> anyhow::Result<()> {
                 if payload.username() == "test" && payload.password() == "test" {
                     let uuid = Uuid::new_v4();
 
-                    MAP.get_or_init(|| Mutex::new(HashMap::new())).lock().await.insert(uuid, User::new(uuid));
+                    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+                        .lock()
+                        .await
+                        .insert(uuid, User::new(uuid));
 
                     send.write_u8(ServerResponse::Success as u8).await?;
                     let output = LoginOutput::new(uuid);
                     output.write_to_send_stream(&mut send).await?;
                 } else {
                     send.write_u8(ServerResponse::Error as u8).await?;
-                    send.write_all("Invalid username or password.".as_bytes()).await?;
+                    send.write_all("Invalid username or password.".as_bytes())
+                        .await?;
                 }
                 send.finish().await?;
-            },
+            }
             Command::Ping => {
                 print!("Ping");
 
@@ -162,7 +163,7 @@ async fn receive_ping(connection: quinn::Connection) -> anyhow::Result<()> {
 
                 output.write_to_send_stream(&mut send).await?;
                 send.finish().await?;
-            },
+            }
             Command::Unknown => {
                 println!("Nothing");
             }

@@ -5,7 +5,9 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait Payload {
-    async fn read_from_recv_stream(recv: &mut RecvStream) -> anyhow::Result<Self> where Self: Sized;
+    async fn read_from_recv_stream(recv: &mut RecvStream) -> anyhow::Result<Self>
+    where
+        Self: Sized;
 
     async fn write_to_send_stream(&self, send: &mut SendStream) -> anyhow::Result<()>;
 }
@@ -168,14 +170,15 @@ impl Payload for String {
 /// 0b1 => Some
 /// _ => None
 #[async_trait]
-impl<T> Payload for Option<T> where
-    T: Sync + Payload
+impl<T> Payload for Option<T>
+where
+    T: Sync + Payload,
 {
     async fn read_from_recv_stream(recv: &mut RecvStream) -> anyhow::Result<Option<T>> {
         let first_byte = recv.read_u8().await?;
         let result: Option<T> = match first_byte {
             0b1 => Some(T::read_from_recv_stream(recv).await?),
-            _ => None
+            _ => None,
         };
 
         Ok(result)
@@ -187,7 +190,7 @@ impl<T> Payload for Option<T> where
                 send.write_u8(0b1).await?;
 
                 x.write_to_send_stream(send).await?;
-            },
+            }
             None => {
                 send.write_u8(0b0).await?;
             }
@@ -200,7 +203,7 @@ impl<T> Payload for Option<T> where
 #[async_trait]
 impl Payload for Uuid {
     async fn read_from_recv_stream(recv: &mut RecvStream) -> anyhow::Result<Uuid> {
-        Ok( Uuid::from_u128(recv.read_u128().await?) )
+        Ok(Uuid::from_u128(recv.read_u128().await?))
     }
 
     async fn write_to_send_stream(&self, send: &mut SendStream) -> anyhow::Result<()> {

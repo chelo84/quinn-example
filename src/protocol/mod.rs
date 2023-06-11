@@ -12,5 +12,5 @@ pub enum Command {
     Login = 0x01,
     Ping = 0x02,
 
-    Unknown = u8::MAX
+    Unknown = u8::MAX,
 }

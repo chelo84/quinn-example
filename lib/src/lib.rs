@@ -1,10 +1,9 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::Data::Struct;
-use syn::{Data, DeriveInput, Fields, parse_macro_input};
+use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
 fn generate_read_from_recv_code(fields: &Fields) -> proc_macro2::TokenStream {
-
     let field_code = fields.iter().map(|field| {
         let field_name = field.ident.as_ref().unwrap();
         let field_type = &field.ty;
@@ -35,22 +34,18 @@ fn generate_write_to_send_code(fields: &Fields) -> proc_macro2::TokenStream {
 
 #[proc_macro_derive(Payload)]
 pub fn derive_payload(input: TokenStream) -> TokenStream {
-    let DeriveInput {
-        ident,
-        data,
-        ..
-    } = parse_macro_input!(input as DeriveInput);
+    let DeriveInput { ident, data, .. } = parse_macro_input!(input as DeriveInput);
 
     let read_from_recv_code = match &data {
         Struct(data) => generate_read_from_recv_code(&data.fields),
         Data::Enum(_) => quote! { compile_error!("enum") },
-        Data::Union(_) => quote! { compile_error!("union") }
+        Data::Union(_) => quote! { compile_error!("union") },
     };
 
     let write_to_send_code = match &data {
         Struct(data) => generate_write_to_send_code(&data.fields),
         Data::Enum(_) => quote! { compile_error!("enum") },
-        Data::Union(_) => quote! { compile_error!("union") }
+        Data::Union(_) => quote! { compile_error!("union") },
     };
 
     let expanded = quote! {

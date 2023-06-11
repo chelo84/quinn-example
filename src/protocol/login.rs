@@ -21,7 +21,7 @@ impl LoginInput {
 
 #[derive(Payload)]
 pub struct LoginOutput {
-    client_id: Uuid
+    client_id: Uuid,
 }
 
 impl LoginOutput {

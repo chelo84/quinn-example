@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut i: u16 = 0;
     let mut futures = vec![];
-    while i < 100 {
+    while i < 10 {
         futures.push(tokio::spawn({
             let server_cert = server_cert.clone();
             async move {
@@ -147,6 +147,7 @@ async fn connect_and_ping(
                 .await
                 .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
 
+            let _response_code: u8 = recv.read_u8().await?;
             let output: PingOutput = PingOutput::read_from_recv_stream(&mut recv).await?;
 
             println!(" -> Pong ({i},{j})");
@@ -245,6 +246,7 @@ async fn receive_command(connection: Connection) -> anyhow::Result<()> {
                     assert!(user.is_some());
                 }
 
+                send.write_u8(ServerResponse::Success as u8).await?;
                 let output: PingOutput = PingOutput::new(input.iteration());
                 output.write_to_send_stream(&mut send).await?;
                 send.finish()

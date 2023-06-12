@@ -9,6 +9,9 @@ members = [
     "lib"
 ]
 
+[[bin]]
+name = "ping"
+
 [dependencies]
 anyhow = "1.0.71"
 async-trait = "0.1.68"

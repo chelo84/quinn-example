@@ -127,36 +127,32 @@ async fn connect_and_ping(
     let mut j: u32 = 0;
     let uuid: Uuid = login(&connection).await?;
 
-    loop {
+    while j < 100 {
         let (mut send, mut recv) = connection
             .open_bi()
             .await
             .map_err(|e| anyhow!("failed to open stream: {}", e))?;
 
-        if j == 100 {
-            println!("closing");
-            connection.close(0u32.into(), b"done");
-            break;
-        } else {
-            send.write_u8(Command::Ping as u8).await?;
+        send.write_u8(Command::Ping as u8).await?;
 
-            let payload = PingInput::new(uuid, j);
+        let payload = PingInput::new(uuid, j);
 
-            payload.write_to_send_stream(&mut send).await?;
-            send.finish()
-                .await
-                .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
+        payload.write_to_send_stream(&mut send).await?;
+        send.finish()
+            .await
+            .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
 
-            let _response_code: u8 = recv.read_u8().await?;
-            let output: PingOutput = PingOutput::read_from_recv_stream(&mut recv).await?;
+        let _response_code: u8 = recv.read_u8().await?;
+        let output: PingOutput = PingOutput::read_from_recv_stream(&mut recv).await?;
 
-            println!(" -> Pong ({i},{j})");
-            assert_eq!(output.iteration(), j);
-            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        }
+        println!("> Pong ({i},{j})");
+        assert_eq!(output.iteration(), j);
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
 
         j += 1;
     }
+
+    connection.close(0u32.into(), b"done");
 
     Ok(())
 }
@@ -210,7 +206,7 @@ async fn receive_command(connection: Connection) -> anyhow::Result<()> {
         let command = recv.read_u8().await?;
         match Command::from_u8(command).unwrap_or(Command::Unknown) {
             Command::Login => {
-                println!("Login");
+                println!("> Login");
 
                 let payload: LoginInput = LoginInput::read_from_recv_stream(&mut recv).await?;
 
@@ -236,7 +232,7 @@ async fn receive_command(connection: Connection) -> anyhow::Result<()> {
                     .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
             }
             Command::Ping => {
-                print!("Ping");
+                println!("> Ping");
 
                 let input: PingInput = PingInput::read_from_recv_stream(&mut recv).await?;
 
@@ -254,7 +250,7 @@ async fn receive_command(connection: Connection) -> anyhow::Result<()> {
                     .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
             }
             Command::Unknown => {
-                println!("Nothing");
+                println!("> Nothing");
             }
         }
     }

@@ -2,7 +2,7 @@ mod common;
 mod protocol;
 
 use std::collections::HashMap;
-use std::future;
+
 use std::net::SocketAddr;
 
 use anyhow::anyhow;
@@ -15,11 +15,10 @@ use crate::protocol::{Command, LoginOutput, PingInput, PingOutput};
 use common::{make_client_endpoint, make_server_endpoint};
 use example_core::Payload;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::{join, signal};
+use tokio::signal;
 use tokio::sync::{mpsc, Mutex};
-use tokio::task::futures;
+
 use uuid::Uuid;
-use uuid::Variant::Future;
 
 enum ServerResponse {
     Success = 0x00,
@@ -231,7 +230,8 @@ async fn receive_command(connection: Connection) -> anyhow::Result<()> {
                         .await?;
                 }
 
-                send.finish().await
+                send.finish()
+                    .await
                     .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
             }
             Command::Ping => {
@@ -247,7 +247,8 @@ async fn receive_command(connection: Connection) -> anyhow::Result<()> {
 
                 let output: PingOutput = PingOutput::new(input.iteration());
                 output.write_to_send_stream(&mut send).await?;
-                send.finish().await
+                send.finish()
+                    .await
                     .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
             }
             Command::Unknown => {

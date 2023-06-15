@@ -12,6 +12,12 @@ members = [
 [[bin]]
 name = "ping"
 
+[[bin]]
+name = "chat_client"
+
+[[bin]]
+name = "chat_server"
+
 [dependencies]
 anyhow = "1.0.71"
 async-trait = "0.1.68"
@@ -33,7 +39,7 @@ features = ["dangerous_configuration", "quic"]
 
 [dependencies.quinn]
 version = "0.10.1"
-features = ["rustls", "log"]
+features = ["default", "lock_tracking"]
 
 [dependencies.lib]
 path = "lib"

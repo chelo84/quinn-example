@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use async_trait::async_trait;
 use quinn::{Chunk, RecvStream, SendStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -172,7 +173,7 @@ impl Payload for String {
 #[async_trait]
 impl<T> Payload for Option<T>
 where
-    T: Sync + Payload,
+    T: Payload + Sync + Send,
 {
     async fn read_from_recv_stream(recv: &mut RecvStream) -> anyhow::Result<Option<T>> {
         let first_byte = recv.read_u8().await?;
@@ -208,6 +209,36 @@ impl Payload for Uuid {
 
     async fn write_to_send_stream(&self, send: &mut SendStream) -> anyhow::Result<()> {
         send.write_u128(self.as_u128()).await?;
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<T> Payload for Vec<T>
+where
+    T: Payload + Sync + Send,
+{
+    async fn read_from_recv_stream(recv: &mut RecvStream) -> anyhow::Result<Vec<T>> {
+        let vec_len = recv.read_u16().await?;
+
+        let mut vec: Vec<T> = vec![];
+        for _ in 0..vec_len {
+            vec.push(T::read_from_recv_stream(recv).await?);
+        }
+
+        Ok(vec)
+    }
+
+    async fn write_to_send_stream(&self, send: &mut SendStream) -> anyhow::Result<()> {
+        // write length of the vec
+        let len = u16::try_from(self.len())
+            .map_err(|e| anyhow!("Unable to cast usize {} to u16: {}", self.len(), e))?;
+        send.write_u16(len).await?;
+
+        for item in self.iter() {
+            item.write_to_send_stream(send).await?;
+        }
 
         Ok(())
     }

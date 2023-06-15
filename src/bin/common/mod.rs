@@ -1,7 +1,10 @@
 //! Commonly used code in most examples.
 
 use quinn::{ClientConfig, Endpoint, ServerConfig};
+use std::time::Duration;
 use std::{error::Error, net::SocketAddr, sync::Arc};
+use tokio::signal;
+use tokio::sync::mpsc;
 
 /// Constructs a QUIC endpoint configured for use a client only.
 ///
@@ -27,8 +30,10 @@ pub fn make_client_endpoint(
 /// - a stream of incoming QUIC connections
 /// - server certificate serialized into DER format
 #[allow(unused)]
-pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
-    let (server_config, server_cert) = configure_server()?;
+pub async fn make_server_endpoint(
+    bind_addr: SocketAddr,
+) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
+    let (server_config, server_cert) = configure_server().await?;
     let endpoint = Endpoint::server(server_config, bind_addr)?;
     Ok((endpoint, server_cert))
 }
@@ -47,14 +52,14 @@ fn configure_client(server_certs: &[&[u8]]) -> Result<ClientConfig, Box<dyn Erro
     let client_config = ClientConfig::with_root_certificates(certs);
 
     // let mut transport_config = TransportConfig::default();
-    // transport_config.max_idle_timeout(Some(Duration::from_secs(30_000).try_into()?));
+    // transport_config.max_idle_timeout(Some(Duration::from_secs(1_000).try_into()?));
     // client_config.transport_config(Arc::new(transport_config));
 
     Ok(client_config)
 }
 
 /// Returns default server configuration along with its certificate.
-fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
+async fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = cert.serialize_der().unwrap();
     let priv_key = cert.serialize_private_key_der();
@@ -64,10 +69,32 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let mut server_config = ServerConfig::with_single_cert(cert_chain, priv_key)?;
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(0_u8.into());
-    // transport_config.keep_alive_interval(Some(Duration::from_secs(1).try_into()?));
+    transport_config.keep_alive_interval(Some(Duration::from_secs(1)));
+    transport_config.max_idle_timeout(Some(Duration::from_secs(5).try_into()?));
 
     Ok((server_config, cert_der))
 }
 
 #[allow(unused)]
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
+
+#[allow(unused)]
+pub async fn create_stop_signal() -> mpsc::Receiver<()> {
+    let (stop_signal_sender, stop_signal_recv) = mpsc::channel(1);
+    tokio::spawn({
+        let stop_signal_sender = stop_signal_sender;
+
+        async move {
+            match signal::ctrl_c().await {
+                Ok(()) => {
+                    let _ = stop_signal_sender.send(()).await;
+                }
+                Err(err) => {
+                    eprintln!("Unable to listen for shutdown signal: {}", err);
+                }
+            }
+        }
+    });
+
+    stop_signal_recv
+}

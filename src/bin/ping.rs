@@ -6,12 +6,13 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use anyhow::anyhow;
+use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
 use quinn::Connection;
 use std::sync::OnceLock;
 
 use crate::protocol::LoginInput;
-use crate::protocol::{Command, LoginOutput, PingInput, PingOutput};
+use crate::protocol::{LoginOutput, PingInput, PingOutput};
 use common::{make_client_endpoint, make_server_endpoint};
 use example_core::Payload;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,7 +29,7 @@ enum ServerResponse {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server_addr = "127.0.0.1:5000".parse().unwrap();
-    let (endpoint, server_cert) = make_server_endpoint(server_addr)?;
+    let (endpoint, server_cert) = make_server_endpoint(server_addr).await?;
     tokio::spawn({
         let endpoint = endpoint.clone();
 
@@ -42,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 tokio::spawn(async move {
-                    let _ = receive_command(conn).await;
+                    let _ = await_commands(conn).await;
                 });
             }
         }
@@ -115,7 +116,7 @@ async fn connect_and_ping(
     server_cert: &Vec<u8>,
 ) -> anyhow::Result<()> {
     let endpoint = make_client_endpoint("0.0.0.0:0".parse().unwrap(), &[server_cert])
-        .map_err(|_| anyhow!("error while creating client endpoint"))?;
+        .map_err(|e| anyhow!("error while creating client endpoint: {}", e))?;
     // connect to server
     let connection = endpoint
         .connect(server_addr, "localhost")
@@ -188,6 +189,15 @@ async fn login(connection: &Connection) -> anyhow::Result<Uuid> {
     }
 }
 
+#[repr(u8)]
+#[derive(Eq, PartialEq, ToPrimitive, FromPrimitive)]
+pub enum Command {
+    Login = 0x01,
+    Ping = 0x02,
+
+    Unknown = u8::MAX,
+}
+
 #[allow(dead_code)]
 struct User {
     pub client_id: Uuid,
@@ -201,7 +211,7 @@ impl User {
 
 static MAP: OnceLock<Mutex<HashMap<Uuid, User>>> = OnceLock::new();
 
-async fn receive_command(connection: Connection) -> anyhow::Result<()> {
+async fn await_commands(connection: Connection) -> anyhow::Result<()> {
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
         let command = recv.read_u8().await?;
         match Command::from_u8(command).unwrap_or(Command::Unknown) {

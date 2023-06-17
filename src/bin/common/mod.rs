@@ -79,10 +79,10 @@ async fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
 
 #[allow(unused)]
-pub async fn create_stop_signal() -> mpsc::Receiver<()> {
+pub async fn create_stop_signal() -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
     let (stop_signal_sender, stop_signal_recv) = mpsc::channel(1);
     tokio::spawn({
-        let stop_signal_sender = stop_signal_sender;
+        let stop_signal_sender = stop_signal_sender.clone();
 
         async move {
             match signal::ctrl_c().await {
@@ -96,5 +96,5 @@ pub async fn create_stop_signal() -> mpsc::Receiver<()> {
         }
     });
 
-    stop_signal_recv
+    (stop_signal_sender, stop_signal_recv)
 }

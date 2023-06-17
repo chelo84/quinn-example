@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
     let mut username: String = String::new();
     reader.read_line(&mut username).await?;
 
-    let user: User;
+    let _user: User;
     {
         let (mut send, mut recv) = connection.open_bi().await?;
         let login_input: LoginInput = LoginInput::new(username.trim());
@@ -54,11 +54,7 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
             Err(anyhow!("Failed to login! {error_message}"))?;
         };
 
-        user = User::read_from_recv_stream(&mut recv).await?;
-
-        if recv.read_to_end(0).await.is_err() {
-            let _ = recv.stop(0u8.into());
-        }
+        _user = User::read_from_recv_stream(&mut recv).await?;
     }
     reload_screen().await;
 
@@ -74,24 +70,36 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
     // send message loop
     tokio::spawn({
         let connection = connection.clone();
-        let user = user.clone();
 
         async move {
-            let _ = send_messages(connection, user).await;
+            let _ = send_messages(connection).await;
         }
     });
 
-    let mut stop_signal_recv = create_stop_signal().await;
+    let (stop_signal_sender, mut stop_signal_recv) = create_stop_signal().await;
+
+    tokio::spawn({
+        let endpoint = endpoint.clone();
+        let connection = connection.clone();
+
+        async move {
+            endpoint.wait_idle().await;
+            println!(
+                "Lost connection! Reason: {}",
+                connection.close_reason().unwrap()
+            );
+            let _ = stop_signal_sender.send(()).await;
+        }
+    });
+
     let _ = stop_signal_recv.recv().await;
 
     connection.close(0_u32.into(), b"done");
 
-    endpoint.wait_idle().await;
-
     Ok(())
 }
 
-async fn send_messages(connection: Connection, user: User) -> anyhow::Result<()> {
+async fn send_messages(connection: Connection) -> anyhow::Result<()> {
     loop {
         let (mut send, mut recv) = connection.open_bi().await?;
 
@@ -99,11 +107,9 @@ async fn send_messages(connection: Connection, user: User) -> anyhow::Result<()>
         let mut message_text: String = String::new();
         reader.read_line(&mut message_text).await?;
 
-        let message: SendMessageInput =
-            SendMessageInput::new(message_text.trim(), *user.client_id());
+        let message: SendMessageInput = SendMessageInput::new(message_text.trim());
         send.write_u8(ServerCommand::SendMessage as u8).await?;
         message.write_to_send_stream(&mut send).await?;
-        send.finish().await?;
 
         assert_eq!(recv.read_u8().await?, ServerResponse::Success as u8);
     }
@@ -141,7 +147,15 @@ async fn reload_screen() {
 
     let messages = MESSAGES.get_or_init(|| Mutex::new(vec![])).lock().await;
     for message in messages.iter() {
-        println!("{}: {}", message.sent_by().username(), message.message());
+        if let Some(user) = message.sent_by() {
+            println!(
+                "{sent_by}: {message}",
+                sent_by = user.username(),
+                message = message.message()
+            );
+        } else {
+            println!("{message}", message = message.message());
+        }
     }
     println!("Send a new message by pressing enter.");
 }

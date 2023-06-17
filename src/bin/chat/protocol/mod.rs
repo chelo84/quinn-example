@@ -8,7 +8,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 pub use user::User;
 
 #[repr(u8)]
-#[derive(Eq, PartialEq, ToPrimitive, FromPrimitive)]
+#[derive(Copy, Clone, Eq, PartialEq, ToPrimitive, FromPrimitive)]
 pub enum ClientCommand {
     /// Payload = [Vec<Message>]
     NewMessage = 0,

@@ -45,22 +45,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let mut stop_signal_recv = create_stop_signal().await;
+    let (_, mut stop_signal_recv) = create_stop_signal().await;
     let _ = stop_signal_recv.recv().await;
 
     println!("Shutting down.");
-    endpoint.wait_idle().await;
+    endpoint.close(0_u32.into(), b"Shut down");
 
     Ok(())
 }
 
-static USERS_MAP: OnceLock<Mutex<HashMap<Uuid, User>>> = OnceLock::new();
-static CONNECTIONS_MAP: OnceLock<Mutex<HashMap<Uuid, Connection>>> = OnceLock::new();
-static MESSAGES_BUFFER: OnceLock<Mutex<Vec<Message>>> = OnceLock::new();
+pub type ConnectionStableId = usize;
+static USERS: OnceLock<Mutex<HashMap<ConnectionStableId, User>>> = OnceLock::new();
+static CONNECTIONS: OnceLock<Mutex<HashMap<ConnectionStableId, Connection>>> = OnceLock::new();
+static MESSAGES: OnceLock<Mutex<Vec<Message>>> = OnceLock::new();
 
 async fn await_commands(connection: Connection) -> anyhow::Result<()> {
-    let uuid: Uuid = Uuid::new_v4();
-
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
         let command = recv.read_u8().await?;
 
@@ -69,23 +68,31 @@ async fn await_commands(connection: Connection) -> anyhow::Result<()> {
                 println!("> Login");
 
                 let payload: LoginInput = LoginInput::read_from_recv_stream(&mut recv).await?;
-                match login(&connection, uuid, payload).await {
+                match login(&connection, Uuid::new_v4(), payload).await {
                     Ok(user) => {
                         send.write_u8(ServerResponse::Success as u8).await?;
 
                         user.write_to_send_stream(&mut send).await?;
 
                         let mut previous_messages_send = connection.open_uni().await?;
-                        let messages_guard = MESSAGES_BUFFER
-                            .get_or_init(|| Mutex::new(vec![]))
-                            .lock()
-                            .await;
+                        let messages_guard =
+                            MESSAGES.get_or_init(|| Mutex::new(vec![])).lock().await;
                         previous_messages_send
                             .write_u8(ClientCommand::NewMessage as u8)
                             .await?;
                         messages_guard
                             .write_to_send_stream(&mut previous_messages_send)
                             .await?;
+
+                        let message: Message = Message::new(
+                            format!(
+                                "{username} has entered the chat!",
+                                username = user.username()
+                            )
+                            .as_str(),
+                            None,
+                        );
+                        let _ = propagate_message(message, Some(&connection)).await;
                     }
                     Err(e) => {
                         send.write_u8(ServerResponse::Error as u8).await?;
@@ -93,22 +100,18 @@ async fn await_commands(connection: Connection) -> anyhow::Result<()> {
                         e.to_string().write_to_send_stream(&mut send).await?;
                     }
                 };
-
-                send.finish()
-                    .await
-                    .map_err(|e| anyhow!("failed to shutdown stream: {}", e))?;
             }
             ServerCommand::SendMessage => {
                 println!("> SendMessage");
 
                 let input = SendMessageInput::read_from_recv_stream(&mut recv).await?;
-                let guard = USERS_MAP.get().unwrap().lock().await;
-                if let Some(user) = guard.get(input.client_id()) {
+                let guard = USERS.get().unwrap().lock().await;
+                if let Some(user) = guard.get(&connection.stable_id()) {
                     let user = user.clone();
                     drop(guard);
 
-                    let message: Message = Message::new(input.message(), user.clone());
-                    MESSAGES_BUFFER
+                    let message: Message = Message::new(input.message(), Some(user.clone()));
+                    MESSAGES
                         .get_or_init(|| Mutex::new(vec![]))
                         .lock()
                         .await
@@ -116,7 +119,7 @@ async fn await_commands(connection: Connection) -> anyhow::Result<()> {
 
                     send.write_u8(ServerResponse::Success as u8).await?;
 
-                    propagate_message(message).await?;
+                    propagate_message(message, None).await?;
                 } else {
                     // user not found
                     send.write_u8(ServerResponse::Error as u8).await?;
@@ -128,31 +131,42 @@ async fn await_commands(connection: Connection) -> anyhow::Result<()> {
         }
     }
 
-    if let Some(map) = CONNECTIONS_MAP.get() {
-        println!("Remove connection {}", &uuid);
-        map.lock().await.remove(&uuid);
+    if let Some(map) = CONNECTIONS.get() {
+        println!("Remove connection {}", connection.stable_id());
+        map.lock().await.remove(&connection.stable_id());
     }
-    if let Some(map) = USERS_MAP.get() {
-        println!("Remove user {}", &uuid);
-        map.lock().await.remove(&uuid);
+    if let Some(map) = USERS.get() {
+        println!("Remove user {}", connection.stable_id());
+        if let Some(user) = map.lock().await.remove(&connection.stable_id()) {
+            let message: Message = Message::new(
+                format!("{username} has left the chat!", username = user.username()).as_str(),
+                None,
+            );
+            let _ = propagate_message(message, Some(&connection)).await;
+        }
     }
 
     Ok(())
 }
 
 // SEND Message COMMAND TO ALL CONNECTIONS
-async fn propagate_message(message: Message) -> anyhow::Result<()> {
-    let guard = CONNECTIONS_MAP
+async fn propagate_message(
+    message: Message,
+    ignored_connection: Option<&Connection>,
+) -> anyhow::Result<()> {
+    let guard = CONNECTIONS
         .get()
         .ok_or(anyhow!("CONNECTION_MAP not initialized"))?
         .lock()
         .await;
-    for connection in guard.values() {
-        let mut send = connection.open_uni().await?;
-        send.write_u8(ClientCommand::NewMessage as u8).await?;
-        vec![message.clone()]
-            .write_to_send_stream(&mut send)
-            .await?;
+    for (client_id, connection) in guard.iter() {
+        if ignored_connection.is_none() || *client_id != ignored_connection.unwrap().stable_id() {
+            let mut send = connection.open_uni().await?;
+            send.write_u8(ClientCommand::NewMessage as u8).await?;
+            vec![message.clone()]
+                .write_to_send_stream(&mut send)
+                .await?;
+        }
     }
 
     Ok(())
@@ -161,7 +175,7 @@ async fn propagate_message(message: Message) -> anyhow::Result<()> {
 async fn login(connection: &Connection, uuid: Uuid, payload: LoginInput) -> anyhow::Result<User> {
     let username: &str = payload.username().trim();
 
-    let mut users_guard = USERS_MAP
+    let mut users_guard = USERS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .await;
@@ -170,20 +184,20 @@ async fn login(connection: &Connection, uuid: Uuid, payload: LoginInput) -> anyh
 
     let user: User = User::new(uuid, username);
 
-    users_guard.insert(uuid, user.clone());
+    users_guard.insert(connection.stable_id(), user.clone());
 
-    CONNECTIONS_MAP
+    CONNECTIONS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .await
-        .insert(uuid, connection.clone());
+        .insert(connection.stable_id(), connection.clone());
 
     Ok(user)
 }
 
 fn validate_username(
     username: &str,
-    users_guard: &MutexGuard<HashMap<Uuid, User>>,
+    users_guard: &MutexGuard<HashMap<ConnectionStableId, User>>,
 ) -> anyhow::Result<()> {
     for user in users_guard.values() {
         if user.username() == username {
